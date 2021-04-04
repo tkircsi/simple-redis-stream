@@ -106,7 +106,27 @@ func (c *Consumer) CreateGroup() {
 }
 
 func (c *Consumer) Listen(stime int) {
+	pstreams := make([]string, len(c.Streams))
+	copy(pstreams, c.Streams)
+	for i := len(c.Streams) / 2; i < len(c.Streams); i++ {
+		pstreams[i] = "0"
+	}
+
 	for {
+
+		// Check for pending messages
+		pxstreams, err := c.rc.XReadGroup(c.ctx, &redis.XReadGroupArgs{
+			Group:    c.Group,
+			Consumer: c.Consumer,
+			Streams:  pstreams,
+		}).Result()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		c.processMessages(stime, pxstreams)
+
+		// Check for new messages
 		xstreams, err := c.rc.XReadGroup(c.ctx, &redis.XReadGroupArgs{
 			Group:    c.Group,
 			Consumer: c.Consumer,
@@ -121,18 +141,29 @@ func (c *Consumer) Listen(stime int) {
 			log.Fatal(err)
 		}
 
-		for _, xstream := range xstreams {
-			stream := xstream.Stream
-			for _, msg := range xstream.Messages {
-				fmt.Printf("Group: %s, Consumer: %s, Stream: %s, Message: ID: %s, Value: %v\n", c.Group, c.Consumer, stream, msg.ID, msg.Values)
+		c.processMessages(stime, xstreams)
+	}
+}
 
-				// Process a message takes stime milliseconds
-				time.Sleep(time.Duration(stime) * time.Millisecond)
+func (c *Consumer) processMessages(stime int, xstreams []redis.XStream) {
+	for _, xstream := range xstreams {
+		stream := xstream.Stream
+		for _, msg := range xstream.Messages {
+			id := msg.ID
+			values := msg.Values
+			fmt.Printf("Group: %s, Consumer: %s, Stream: %s, ID: %s\n", c.Group, c.Consumer, stream, id)
+			i := 1
+			for k, v := range values {
+				fmt.Printf("%d) %s %v\n", i, k, v)
+				i++
+			}
 
-				ack, err := c.rc.XAck(c.ctx, stream, c.Group, msg.ID).Result()
-				if ack != 1 || err != nil {
-					fmt.Printf("Error XACK ID: %s\n", msg.ID)
-				}
+			// Process a message takes stime milliseconds
+			time.Sleep(time.Duration(stime) * time.Millisecond)
+
+			ack, err := c.rc.XAck(c.ctx, stream, c.Group, msg.ID).Result()
+			if ack != 1 || err != nil {
+				fmt.Printf("Error XACK ID: %s\n", msg.ID)
 			}
 		}
 	}
